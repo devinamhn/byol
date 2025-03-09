@@ -13,11 +13,13 @@ from typing import Any, Dict, List, Tuple, Type, Union
 from torch import Tensor
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from paths import Path_Handler
-from config import load_config, update_config, load_config_finetune
-from models import BYOL
-from datamodules import RGZ_DataModule_Finetune
+from byol.paths import Path_Handler
+from byol.config import load_config, update_config, load_config_finetune
+from byol.models import BYOL
+from byol.datamodules import RGZ_DataModule_Finetune
 
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 
 class LogisticRegression(torch.nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -337,7 +339,7 @@ def main():
         )
 
         finetune_datamodule = RGZ_DataModule_Finetune(
-            paths["rgz"],
+            paths["mb"],
             batch_size=config["finetune"]["batch_size"],
             center_crop=config["augmentations"]["center_crop"],
             val_size=config["finetune"]["val_size"],
