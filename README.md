@@ -1,10 +1,13 @@
-# Repository for the paper [*Radio Galaxy Zoo: Building a multi-purpose foundation model for radio astronomy with self-supervised learning*](https://arxiv.org/abs/2305.16127)
+# Repository for evaluting BYOL embeddings
+
+The original model was trained and evaluated in the following paper [*Radio Galaxy Zoo: Building a multi-purpose foundation model for radio astronomy with self-supervised learning*](https://arxiv.org/abs/2305.16127)
+
+In this repository we will further examine the embeddings and perform additional analysis by incorporating the output other model classes.
 
 # Instructions for use
 
 ## Installation
 - Clone this repo.
-- Checkout the `reproduce` branch. (**IMPORTANT**)
 - Create a new python venv with python 3.6+ 
 - Activate your virtual environment.
 - Install packages by running `pip install -r requirements.txt` (make sure you are in the root of the project).
