@@ -2,7 +2,7 @@
 
 The original model was trained and evaluated in the following paper [*Radio Galaxy Zoo: Building a multi-purpose foundation model for radio astronomy with self-supervised learning*](https://arxiv.org/abs/2305.16127)
 
-In this repository we will further examine the embeddings and perform additional analysis by incorporating the output other model classes.
+In this repository we will further examine the embeddings and perform additional analysis by incorporating the output of other model classes.
 
 # Instructions for use
 
