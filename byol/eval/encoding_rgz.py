@@ -23,6 +23,7 @@ from byol.paths import Path_Handler
 from byol.resnet import ResNet, BasicBlock
 from byol.finetuning import FineTune
 from byol.config import load_config_finetune
+from byol.eval.reducer import Reducer
 
 # # HPARAMS
 PCA_COMPONENTS = 200
@@ -32,62 +33,6 @@ METRIC = "cosine"
 seed = 69
 
 
-
-class Reducer:
-    def __init__(self, encoder):
-        self.encoder = encoder
-        self.pca = PCA(n_components=PCA_COMPONENTS, random_state=seed)
-        self.umap = UMAP(
-            n_components=2,
-            n_neighbors=UMAP_N_NEIGHBOURS,
-            min_dist=UMAP_MIN_DIST,
-            metric="cosine",
-            random_state=seed,
-        )
-
-    def embed_dataset(self, data, batch_size=400):
-        train_loader = DataLoader(data, batch_size, shuffle=False)
-        device = next(encoder.parameters()).device
-        feature_bank = []
-        target_bank = []
-        for data in tqdm(train_loader):
-            # Load data and move to correct device
-            x, y = data
-
-            x_enc = encoder(x.to(device))
-
-            feature_bank.append(x_enc.squeeze().detach().cpu())
-            # target_bank.append(y.to(device).detach().cpu())
-
-        # Save full feature bank for validation epoch
-        features = torch.cat(feature_bank)
-        targets = np.ones(features.shape[0])
-        # targets = torch.cat(target_bank)
-
-
-        return features, targets
-
-    def fit(self, data):
-        print("Fitting reducer")
-        features, targets = self.embed_dataset(data)
-        self.features = features
-        self.targets = targets
-
-        self.pca.fit(self.features)
-        self.umap.fit(self.pca.transform(self.features))
-
-    def transform(self, data):
-        # x = self.encoder(x.cuda()).squeeze().detach().cpu().numpy()
-        x, _ = self.embed_dataset(data)
-        x = self.pca.transform(x)
-        x = self.umap.transform(x)
-        return x
-
-    def transform_pca(self, data):
-        x, _ = self.embed_dataset(data)
-        x = self.pca.transform(x)
-        return x
-
 paths = Path_Handler()._dict()
 
 #load pretrained byol checkpoint
@@ -95,7 +40,7 @@ byol = BYOL.load_from_checkpoint(paths["main"] / "byol.ckpt")
 
 #load finetuned byol checkpoint
 # finetuned_ckpt_path = 'model_finetune'
-finetuned_ckpt_path = paths["main"] / "files/finetune/hbo9tznc/BYOL_finetune_reproduce/hbo9tznc/checkpoints/epoch=299-step=3600.ckpt"
+finetuned_ckpt_path = paths["files"] / "finetune/hbo9tznc/BYOL_finetune_reproduce/hbo9tznc/checkpoints/epoch=299-step=3600.ckpt"
 finetuned_ckpt = torch.load(finetuned_ckpt_path)
 
 # get state dict keys
