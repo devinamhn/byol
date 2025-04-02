@@ -2,291 +2,17 @@ import wandb
 import pytorch_lightning as pl
 import logging
 import pytorch_lightning as pl
-import torch
-import torchmetrics as tm
-import torch.nn.functional as F
-import torch.nn as nn
-
-from pathlib import Path
-from einops import rearrange
-from typing import Any, Dict, List, Tuple, Type, Union
-from torch import Tensor
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from byol.paths import Path_Handler
-from byol.config import load_config, update_config, load_config_finetune
+from byol.config import load_config_finetune_mrl
 from byol.models import BYOL
 from byol.datamodules import RGZ_DataModule_Finetune
+from byol.ftheads import MLPHead, MRL_Linear_Layer
+from byol.ftclass import FineTuneMRL
 
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
-
-class LogisticRegression(torch.nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.batchnorm = nn.BatchNorm1d(input_dim)
-        self.linear = torch.nn.Linear(input_dim, output_dim)
-
-    def forward(self, x):
-        x = self.batchnorm(x)
-        x = self.linear(x)
-        return x
-
-#need to do normalistion somewhere!!!!
-
-class MRL_Linear_Layer(nn.Module):
-     
-     
-    #nesting_liat[i] = input_dim, num_classes = output_dim 
-	def __init__(self, nesting_list: List, num_classes=1000, efficient=False, **kwargs):
-		super(MRL_Linear_Layer, self).__init__()
-		self.nesting_list = nesting_list
-		self.num_classes = num_classes # Number of classes for classification
-		self.efficient = efficient
-		if self.efficient:
-			setattr(self, f"nesting_classifier_{0}", nn.Linear(nesting_list[-1], self.num_classes, **kwargs))		
-		else:	
-			for i, num_feat in enumerate(self.nesting_list):
-
-                    
-				setattr(self, f"nesting_classifier_{i}", nn.Linear(num_feat, self.num_classes, **kwargs))	
-
-	def reset_parameters(self):
-		if self.efficient:
-			self.nesting_classifier_0.reset_parameters()
-		else:
-			for i in range(len(self.nesting_list)):
-				getattr(self, f"nesting_classifier_{i}").reset_parameters()
-
-
-	def forward(self, x):
-		nesting_logits = ()
-		for i, num_feat in enumerate(self.nesting_list):
-			if self.efficient:
-				if self.nesting_classifier_0.bias is None:
-					nesting_logits += (torch.matmul(x[:, :num_feat], (self.nesting_classifier_0.weight[:, :num_feat]).t()), )
-				else:
-					nesting_logits += (torch.matmul(x[:, :num_feat], (self.nesting_classifier_0.weight[:, :num_feat]).t()) + self.nesting_classifier_0.bias, )
-			else:
-				nesting_logits +=  (getattr(self, f"nesting_classifier_{i}")(x[:, :num_feat]),)
-
-		return nesting_logits
-        
-class Matryoshka_CE_Loss(nn.Module):
-	def __init__(self, relative_importance: List[float]=None, **kwargs):
-		super(Matryoshka_CE_Loss, self).__init__()
-		self.criterion = nn.CrossEntropyLoss(**kwargs)
-		# relative importance shape: [G]
-		self.relative_importance = relative_importance
-
-	def forward(self, output, target):
-		# output shape: [G granularities, N batch size, C number of classes]
-		# target shape: [N batch size]
-
-		# Calculate losses for each output and stack them. This is still O(N)
-		losses = torch.stack([self.criterion(output_i, target) for output_i in output])
-		
-		# Set relative_importance to 1 if not specified
-		rel_importance = torch.ones_like(losses) if self.relative_importance is None else torch.tensor(self.relative_importance)
-		
-		# Apply relative importance weights
-		weighted_losses = rel_importance * losses
-		return weighted_losses.sum()
-    
-class FineTune(pl.LightningModule):
-    """
-    Parent class for self-supervised LightningModules to perform linear evaluation with multiple
-    data-sets.
-    """
-
-    def __init__(
-        self,
-        encoder: nn.Module,
-        head,
-        dim: int,
-        n_classes,
-        n_epochs=100,
-        n_layers=0,
-        batch_size=1024,
-        lr_decay=0.75,
-        seed=69,
-        **kwargs,
-    ):
-        super().__init__()
-
-        self.save_hyperparameters(ignore=["encoder", "head"])
-
-        self.n_layers = n_layers
-        self.batch_size = batch_size
-        self.encoder = encoder
-        self.lr_decay = lr_decay
-        self.n_epochs = n_epochs
-        self.seed = seed
-        self.head = head
-        self.n_classes = n_classes
-        self.layers = []
-        self.nesting_start = 1
-        self.nesting_list = [2**i for i in range(self.nesting_start, 10)] #if self.nesting else None
-
-        # Set head
-        if head == "linear":
-            self.head = LogisticRegression(input_dim=dim, output_dim=n_classes)
-            self.head_type = "linear"
-        elif isinstance(head, nn.Module):
-            self.head = head
-            self.head_type = "custom"
-        else:
-            raise ValueError("Head must be either 'linear' or a PyTorch Module")
-
-        # Set finetuning layers for easy access
-        if self.n_layers:
-            layers = self.encoder.finetuning_layers
-            assert self.n_layers <= len(
-                layers
-            ), f"Network only has {len(layers)} layers, {self.n_layers} specified for finetuning"
-
-            self.layers = layers[::-1][:n_layers]
-
-        self.train_acc = tm.Accuracy(
-            task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-        ).to(self.device)
-
-        self.val_acc = tm.Accuracy(
-            task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-        ).to(self.device)
-
-        self.test_acc = tm.Accuracy(
-            task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-        ).to(self.device)
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.encoder(x)
-        x = rearrange(x, "b c h w -> b (c h w)")
-        x = self.head(x)
-        return x
-
-    def on_fit_start(self):
-        # Log size of data-sets #
-
-        self.train_acc = tm.Accuracy(
-            task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-        ).to(self.device)
-        self.val_acc = tm.Accuracy(
-            task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-        ).to(self.device)
-
-        self.test_acc = nn.ModuleList(
-            [
-                tm.Accuracy(
-                    task="multiclass", average="micro", threshold=0, num_classes=self.n_classes
-                ).to(self.device)
-            ]
-            * len(self.trainer.datamodule.data["test"])
-        )
-
-        logging_params = {f"n_{key}": len(value) for key, value in self.trainer.datamodule.data.items()}
-        self.logger.log_hyperparams(logging_params)
-
-        # Make sure network that isn't being finetuned is frozen
-        # probably unnecessary but best to be sure
-        set_grads(self.encoder, False)
-        if self.n_layers:
-            for layer in self.layers:
-                set_grads(layer, True)
-
-    def training_step(self, batch, batch_idx):
-        # Load data and targets
-        x, y = batch
-        logits = self.forward(x)
-        y_pred = logits.softmax(dim=-1)
-        
-        loss = F.cross_entropy(y_pred, y, label_smoothing=0.1 if self.n_layers else 0)
-        
-        loss_fn = Matryoshka_CE_Loss(label_smoothing = 0.1 if self.n_layers else 0)
-        loss = loss_fn.forward(y_pred, y)
-
-        self.log("finetuning/train_loss", loss, on_step=False, on_epoch=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        x, y = batch
-        preds = self.forward(x)
-        self.val_acc(preds, y)
-        self.log("finetuning/val_acc", self.val_acc, on_step=False, on_epoch=True)
-
-    def test_step(self, batch, batch_idx, dataloader_idx=0):
-        x, y = batch
-        name = list(self.trainer.datamodule.data["test"].keys())[dataloader_idx]
-
-        preds = self.forward(x)
-        self.test_acc[dataloader_idx](preds, y)
-        self.log(
-            f"finetuning/test/{name}_acc",
-            self.test_acc[dataloader_idx],
-            on_step=False,
-            on_epoch=True,
-            add_dataloader_idx=False,
-        )
-
-    def configure_optimizers(self):
-        if not self.n_layers and self.head_type == "linear":
-            # Scale base lr=0.1
-            lr = 0.1 * self.batch_size / 256
-            params = self.head.parameters()
-            return torch.optim.SGD(params, momentum=0.9, lr=lr)
-        else:
-            lr = 0.001 * self.batch_size / 256
-            params = [{"params": self.head.parameters(), "lr": lr}]
-            # layers.reverse()
-
-            # Append parameters of layers for finetuning along with decayed learning rate
-            for i, layer in enumerate(self.layers):
-                params.append({"params": layer.parameters(), "lr": lr * (self.lr_decay**i)})
-
-            # Initialize AdamW optimizer with cosine decay learning rate
-            opt = torch.optim.AdamW(params, weight_decay=0.05, betas=(0.9, 0.999))
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, self.n_epochs)
-            return [opt], [scheduler]
-
-
-
-class MLPHead(nn.Module):
-    """
-    Fully connected head with a single hidden layer. Batchnorm applied as first layer so that
-    feature space of encoder doesn't need to be normalized.
-    """
-
-    def __init__(self, input_dim, depth, width, output_dim):
-        super(MLPHead, self).__init__()
-
-        self.input_layer = nn.Sequential(
-            nn.BatchNorm1d(input_dim),
-            nn.Linear(input_dim, width),
-            nn.GELU(),
-        )
-
-        self.hidden_layers = nn.ModuleList()
-        for i in range(depth):
-            self.hidden_layers.append(
-                nn.Sequential(
-                    nn.Linear(width, width),
-                    nn.GELU(),
-                )
-            )
-
-        self.output_layer = nn.Sequential(
-            nn.Linear(width, output_dim),
-        )
-
-    def forward(self, x):
-        x = self.input_layer(x)
-
-        for layer in self.hidden_layers:
-            x = layer(x)
-
-        x = self.output_layer(x)
-
-        return x
 
 
 def run_finetuning(config, encoder, datamodule, logger):
@@ -320,7 +46,7 @@ def run_finetuning(config, encoder, datamodule, logger):
         **config["trainer"],
     )
 
-    # Initialize linear head
+    # Initialize head
     if config["finetune"]["head"] == "linear":
         # head = LogisticRegression(input_dim=encoder.dim, output_dim=config["finetune"]["n_classes"])
         head = "linear"
@@ -332,10 +58,16 @@ def run_finetuning(config, encoder, datamodule, logger):
             width=config["finetune"]["width"],
             output_dim=config["finetune"]["n_classes"],
         )
-    else:
-        raise ValueError("Head must be either linear or mlp")
 
-    model = FineTune(
+    elif config["finetune"]["head"] == 'mrl':
+        nesting_start = 1
+        nesting_list = [2**i for i in range(nesting_start, 10)]
+        head = MRL_Linear_Layer(nesting_list, num_classes=config["finetune"]["n_classes"])
+   
+    else:
+        raise ValueError("Head must be either linear or mlp or mrl")
+
+    model = FineTuneMRL(
         encoder,
         head,
         dim=encoder.dim,
@@ -370,7 +102,7 @@ def main():
     paths = Path_Handler()._dict()
 
     # Load up finetuning config
-    config_finetune = load_config_finetune()
+    config_finetune = load_config_finetune_mrl()
 
     ## Run finetuning ##
     for seed in range(config_finetune["finetune"]["iterations"]):
