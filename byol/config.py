@@ -88,3 +88,19 @@ def load_config_finetune():
             config = yaml.load(ymlconfig, Loader=yaml.FullLoader)
 
     return config
+
+def load_config_finetune_mrl():
+    """Helper function to load yaml config file, convert to python dictionary and return."""
+
+    path = path_dict["config"] / "finetune_mrl.yml"
+
+    # load data-set specific config
+    with open(path, "r") as ymlconfig:
+        config = yaml.load(ymlconfig, Loader=yaml.FullLoader)
+
+    if config["finetune"]["preset"] == "optimal":
+        path = path_dict["config"] / "finetune_optimal.yml"
+        with open(path, "r") as ymlconfig:
+            config = yaml.load(ymlconfig, Loader=yaml.FullLoader)
+
+    return config
