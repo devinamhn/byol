@@ -1,0 +1,29 @@
+finetune:
+  # resnet sizes 
+  run_id: 'none' # resnet-18 
+  seed: 69
+
+  preset: 'None'
+  dataset: 'mb'
+  n_layers: -1 # -1 finetunes all layers
+  n_classes: 2 
+  iterations: 10
+  lr_decay: 0.75
+  n_epochs: 300
+  batch_size: 64
+  val_size: 0
+  early_stopping: False
+  weight_decay: 0.005
+  head: 'mrl'
+  depth: 0
+  width: 0
+
+trainer:
+  # gpus: 1 # set to 1 to disable multi gpu training
+  devices: 1
+  num_nodes: 1
+  # strategy: null # set to null to disable multi gpu training
+  fast_dev_run: False # debugging mode
+  precision: 32 # [16, 32, 'bf16'], often overriden
+  deterministic: True
+  accelerator: 'gpu'
